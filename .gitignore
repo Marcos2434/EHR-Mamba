@@ -1,3 +1,7 @@
+output-*/
+processed_datasets/
+P12data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
