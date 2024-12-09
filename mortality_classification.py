@@ -91,7 +91,7 @@ def train(
     """
     training
     """
-
+    
     iterable_inner_dataloader = iter(train_dataloader)
     test_batch = next(iterable_inner_dataloader)
     max_seq_length = test_batch[0].shape[2]
@@ -182,19 +182,6 @@ def train(
                 delta = delta.to(device)
 
             optimizer.zero_grad()
-
-            writer = SummaryWriter("model_architecture")
-            # writer.add_graph(model, (data, static, times, mask))
-            writer.add_graph(
-                model,
-                (
-                    data.to(device),
-                    static.to(device),
-                    times.to(device),
-                    mask.to(device),
-                )
-            )
-            writer.close()
         
             predictions = model(
                 x=data, static=static, time=times, sensor_mask=mask, delta=delta
