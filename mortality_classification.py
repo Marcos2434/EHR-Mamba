@@ -15,6 +15,8 @@ from models.early_stopper import EarlyStopping
 from models.deep_set_attention import DeepSetAttentionModel
 from models.grud import GRUDModel
 from models.ip_nets import InterpolationPredictionModel
+from models.EHRMamba import MambaEHRModel, SimpleMambaEHRModel
+from torch.utils.tensorboard import SummaryWriter
 
 
 def train_test(
@@ -128,6 +130,25 @@ def train(
             return_intermediates=False,
             **model_args
         )
+    elif model_type == "mamba":
+        model = MambaEHRModel(
+            ts_dim=sensor_count, # Number of time-series features (37)
+            static_dim=static_size, # Number of static features (8)
+            hidden_dim=16, # Hidden layer size
+            seq_len=max_seq_length, # Sequence length (74)
+            output_dim=2,
+            dropout_rate=0.5,
+        )
+    elif model_type == "simple_mamba":
+        model = SimpleMambaEHRModel(
+            ts_dim=sensor_count, # Number of time-series features (37)
+            static_dim=static_size, # Number of static features (8)
+            hidden_dim=16, # Hidden layer size
+            seq_len=max_seq_length, # Sequence length (74)
+            output_dim=2,
+            dropout_rate=0.5,
+        )
+        
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])
     print(f"# of trainable parameters: {params}")
@@ -162,9 +183,23 @@ def train(
 
             optimizer.zero_grad()
 
+            writer = SummaryWriter("model_architecture")
+            # writer.add_graph(model, (data, static, times, mask))
+            writer.add_graph(
+                model,
+                (
+                    data.to(device),
+                    static.to(device),
+                    times.to(device),
+                    mask.to(device),
+                )
+            )
+            writer.close()
+        
             predictions = model(
                 x=data, static=static, time=times, sensor_mask=mask, delta=delta
             )
+            
             if type(predictions) == tuple:
                 predictions, recon_loss = predictions
             else:

@@ -165,5 +165,8 @@ class EncoderClassifierRegular(nn.Module):
 
         nonlinear_merged = self.nonlinear_merger(x_merged).relu()
 
+        print(self.classifier(nonlinear_merged))
+        raise NotImplementedError
+        
         # classify!
         return self.classifier(nonlinear_merged)
