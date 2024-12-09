@@ -78,60 +78,62 @@ class SimpleMambaEHRModel(nn.Module):
         seq_len, 
         dropout_rate=0,
         hidden_dim=16, 
-        mamba_model_dim = 16,
-        num_mambas_ensemble = 4,
+        mamba_model_dim=16,
+        num_mambas_ensemble=4,
     ):
         super().__init__()
         
-        
         self.mamba_model_dim = mamba_model_dim
+        self.seq_len = seq_len
         
-        self.ts_projection = nn.Linear(ts_dim, self.mamba_model_dim) # time series data projection to mamba layer model dimension 
-        
+        # Linear layer for projecting time-series data
+        # We will apply BatchNorm after we transpose to (B, C, L) format
+        self.ts_projection = nn.Linear(ts_dim, self.mamba_model_dim)
+        self.ts_bn = nn.BatchNorm1d(self.mamba_model_dim)  # Normalizes over features (C)
+
         # Mamba layer for time-series data
         self.mamba_layer = MambaLayer(
             MambaConfig(
                 d_model=self.mamba_model_dim,  # D
-                n_layers=4,  # Minimal layers for simplicity
-                d_state=64,  # Hidden state size
-                expand_factor=2,  # Default expansion factor
+                n_layers=2,
+                d_state=64,
+                expand_factor=2,
             )
         )
         
-        # Create an ensemble of Mamba layers with dropout
+        # Create an ensemble of Mamba layers
         self.mamba_ensemble = nn.ModuleList([
-            nn.Sequential(  # Add dropout to Mamba layer output
-                MambaLayer(
-                    MambaConfig(
-                        d_model=self.mamba_model_dim,  # D
-                        n_layers=4,
-                        d_state=64,
-                        expand_factor=2,
-                    )
-                ),
-                nn.Dropout(dropout_rate)  # Dropout applied to Mamba layer outputs
+            MambaLayer(
+                MambaConfig(
+                    d_model=self.mamba_model_dim,  # D
+                    n_layers=4,
+                    d_state=64,
+                    expand_factor=2,
+                )
             )
             for _ in range(num_mambas_ensemble)
         ])
                 
         self.num_mambas_ensemble = num_mambas_ensemble
 
-        # Static encoder
+        # Static encoder with BatchNorm
+        # For static features, shape is (B, static_dim), so BatchNorm1d works on (B, hidden_dim)
         self.static_encoder = nn.Sequential(
             nn.Linear(static_dim, hidden_dim),
+            nn.BatchNorm1d(hidden_dim),
             nn.ReLU(),
             nn.Dropout(dropout_rate),
             nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.BatchNorm1d(hidden_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout_rate)
         )
 
-        # Classifier
+        # Classifier with BatchNorm
+        # After concatenation, shape is (B, hidden_dim//2 + mamba_model_dim * num_mambas_ensemble)
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim // 2 + self.mamba_model_dim * self.num_mambas_ensemble, 16),  # Combine static and Mamba features
-            nn.ReLU(),
-            nn.Dropout(dropout_rate),
-            nn.Linear(32, 16),
+            nn.Linear(hidden_dim // 2 + self.mamba_model_dim * self.num_mambas_ensemble, 16),
+            nn.BatchNorm1d(16),
             nn.ReLU(),
             nn.Linear(16, output_dim)  # Output layer
         )
@@ -140,36 +142,39 @@ class SimpleMambaEHRModel(nn.Module):
         """
         Forward pass for the simple EHR model with Mamba.
         """
+        # x: (B, ts_dim, seq_len)
         # Apply mask to time-series data
-        x = x * sensor_mask  # Shape: (B, ts_dim, seq_len)
-        x = x.transpose(1, 2)  # Shape: (B, seq_len, ts_dim)
-                
-        ts_projection = self.ts_projection(x) # Shape: (B, seq_len, mamba_model_dim)
+        x = x * sensor_mask  # Still (B, ts_dim, seq_len)
         
+        # Move features to last dimension: (B, seq_len, ts_dim)
+        x = x.transpose(1, 2)
         
+        # Project to mamba_model_dim: (B, seq_len, mamba_model_dim)
+        ts_projection = self.ts_projection(x)
+        
+        # For BatchNorm1d, we need (B, C, L) format, where C is the feature dimension
+        ts_projection = ts_projection.transpose(1, 2)  # (B, mamba_model_dim, seq_len)
+        ts_projection = self.ts_bn(ts_projection)       # Normalized over features
+        ts_projection = ts_projection.transpose(1, 2)   # Back to (B, seq_len, mamba_model_dim)
+
         # Pass through Mamba ensemble
         mamba_outputs = []
         for mamba in self.mamba_ensemble:
-            ts_features = mamba(ts_projection)
-            # ts_features = ts_features[..., :self.attention_embed_dim]  # Adjust for attention
-            # ts_features, _ = self.attention_layer(ts_features, ts_features, ts_features)
-            ts_features = torch.mean(ts_features, dim=1)  # Aggregate over time
+            ts_features = mamba(ts_projection)        # (B, seq_len, mamba_model_dim)
+            ts_features = torch.mean(ts_features, dim=1)  # Aggregate over time -> (B, mamba_model_dim)
             mamba_outputs.append(ts_features)
         
-        ts_features_ensemble = torch.cat(mamba_outputs, dim=1)  # Shape: (B, mamba_model_dim * num_mambas)
+        ts_features_ensemble = torch.cat(mamba_outputs, dim=1)  # (B, mamba_model_dim * num_mambas_ensemble)
         
-        # Pass through Mamba layer
-        # ts_features = self.mamba_layer(ts_projection)  # Shape: (B, seq_len, mamba_model_dim)
-        # ts_features = torch.mean(ts_features, dim=1)  # Mean pooling: aggregate over time dimension: (B, mamba_model_dim)
-        
-        # Encode static data
-        static_features = self.static_encoder(static)  # Shape: (B, hidden_dim // 2)
+        # Encode static data: (B, static_dim) -> (B, hidden_dim//2)
+        static_features = self.static_encoder(static)
 
         # Combine features
-        combined = torch.cat([ts_features_ensemble, static_features], dim=1)  # Shape: (B, hidden_dim // 2 + mamba_model_dim * num_mambas)
+        combined = torch.cat([ts_features_ensemble, static_features], dim=1)  
+        # Shape: (B, hidden_dim//2 + mamba_model_dim * num_mambas_ensemble)
         
         # Classify combined features
-        output = self.classifier(combined)  # Shape: (B, output_dim)
+        output = self.classifier(combined)  # (B, output_dim)
 
         return output
 
