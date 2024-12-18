@@ -139,15 +139,6 @@ def train(
             output_dim=2,
             dropout_rate=0.5,
         )
-    elif model_type == "simple_mamba":
-        model = SimpleMambaEHRModel(
-            ts_dim=sensor_count, # Number of time-series features (37)
-            static_dim=static_size, # Number of static features (8)
-            hidden_dim=16, # Hidden layer size
-            seq_len=max_seq_length, # Sequence length (74)
-            output_dim=2,
-            dropout_rate=0.5,
-        )
         
     model_parameters = filter(lambda p: p.requires_grad, model.parameters())
     params = sum([np.prod(p.size()) for p in model_parameters])

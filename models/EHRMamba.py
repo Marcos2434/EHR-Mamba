@@ -1,9 +1,81 @@
 import torch
 import torch.nn as nn
 
-from .mamba import Mamba as MambaLayer, MambaConfig
+from .mamba import Mamba as MambaBlock, MambaConfig
 
-class SimpleMambaEHRModel(nn.Module):
+class MambaEHR(nn.Module):
+    def __init__(self, ts_dim, static_dim, latent_dim=32, d_state=16, n_layers=4, expand_factor=2):
+        super().__init__()
+
+        self.mamba_model_dim = 32
+
+        # Encode static features
+        self.static_encoder = nn.Sequential(
+            nn.Linear(static_dim, self.mamba_model_dim),
+            nn.ReLU(),
+            nn.Linear(self.mamba_model_dim, latent_dim)  # Match to latent_dim
+        )
+
+        # Linear projection from ts_dim to model_dim
+        self.ts_projection = nn.Linear(ts_dim, self.mamba_model_dim)
+
+        # Mamba block for time-series modeling
+        self.mamba_block = MambaBlock(
+            MambaConfig(
+                d_model=self.mamba_model_dim,  # Model dimension d_model
+                d_state=d_state,    # SSM state expansion factor
+                n_layers=n_layers,      # Local convolution width
+                expand_factor=expand_factor       # Block expansion factor
+            )
+        )
+
+        # Classification head
+        self.classifier = nn.Sequential(
+            nn.Linear(latent_dim, 16),
+            nn.ReLU(),
+            nn.Linear(16, 1),
+            nn.Sigmoid()  # Output mortality prediction as probability
+        )
+
+    def forward(self, ts_values, ts_indicators, static_features):
+        """
+        Forward pass through the model.
+
+        Args:
+            ts_values: Tensor of shape (batch_size, seq_len, ts_dim)
+            ts_indicators: Tensor of shape (batch_size, seq_len, ts_dim)
+            static_features: Tensor of shape (batch_size, static_dim)
+        Returns:
+            mortality_pred: Tensor of shape (batch_size, 1)
+        """
+
+        # Mask time-series values
+        masked_values = ts_values * ts_indicators  # Mask out padded regions
+
+        # Project time-series features to model dimension
+        ts_proj = self.ts_projection(masked_values)  # (batch_size, seq_len, model_dim)
+
+        # Pass through the Mamba block
+        ts_features = self.mamba_block(ts_proj)  # (batch_size, seq_len, model_dim)
+
+        # Aggregate time-series features (e.g., via mean pooling)
+        ts_features_agg = ts_features.mean(dim=1)  # (batch_size, model_dim)
+
+        # Encode static features
+        static_encoded = self.static_encoder(static_features)  # (batch_size, latent_dim)
+
+        # Combine static and time-series features
+        combined_features = static_encoded + ts_features_agg  # (batch_size, latent_dim)
+
+        # Classification head
+        mortality_pred = self.classifier(combined_features)  # (batch_size, 1)
+
+        return mortality_pred
+
+
+# The following models are used within this project's "interface" and trained on its preprocessed data
+
+class OneLayerMambaEHRModel(nn.Module):
     def __init__(
         self, 
         ts_dim, 
@@ -16,7 +88,7 @@ class SimpleMambaEHRModel(nn.Module):
         super().__init__()
         
         # Mamba layer for time-series data
-        self.mamba_layer = MambaLayer(
+        self.mamba_layer = MambaBlock(
             MambaConfig(
                 d_model=ts_dim,  # Feature dimension
                 n_layers=20,  # Minimal layers for simplicity
@@ -69,17 +141,17 @@ class SimpleMambaEHRModel(nn.Module):
         return output
 
 
-class SimpleMambaEHRModel(nn.Module):
+class MambaEHRModel(nn.Module):
     def __init__(
         self, 
         ts_dim, 
         static_dim, 
         output_dim, 
         seq_len, 
-        dropout_rate=0,
-        hidden_dim=16, 
+        dropout_rate=0.5,
+        hidden_dim=16,
         mamba_model_dim=16,
-        num_mambas_ensemble=4,
+        num_mambas_ensemble=8,
     ):
         super().__init__()
         
@@ -92,10 +164,10 @@ class SimpleMambaEHRModel(nn.Module):
         self.ts_bn = nn.BatchNorm1d(self.mamba_model_dim)  # Normalizes over features (C)
 
         # Mamba layer for time-series data
-        self.mamba_layer = MambaLayer(
+        self.mamba_layer = MambaBlock(
             MambaConfig(
                 d_model=self.mamba_model_dim,  # D
-                n_layers=2,
+                n_layers=20,
                 d_state=64,
                 expand_factor=2,
             )
@@ -103,10 +175,10 @@ class SimpleMambaEHRModel(nn.Module):
         
         # Create an ensemble of Mamba layers
         self.mamba_ensemble = nn.ModuleList([
-            MambaLayer(
+            MambaBlock(
                 MambaConfig(
                     d_model=self.mamba_model_dim,  # D
-                    n_layers=4,
+                    n_layers=16,
                     d_state=64,
                     expand_factor=2,
                 )
@@ -179,7 +251,7 @@ class SimpleMambaEHRModel(nn.Module):
         return output
 
 
-class MambaEHRModel(nn.Module):
+class MultiHeadAttentionMambaEHRModel(nn.Module):
     def __init__(
         self, 
         ts_dim, 
@@ -198,7 +270,7 @@ class MambaEHRModel(nn.Module):
 
         # Create an ensemble of Mamba layers
         self.mamba_ensemble = nn.ModuleList([
-            MambaLayer(
+            MambaBlock(
                 MambaConfig(
                     d_model=ts_dim,  # D
                     n_layers=4,  # Reduced number of layers per Mamba
@@ -277,101 +349,3 @@ class MambaEHRModel(nn.Module):
         output = self.classifier(combined)
 
         return output
-    
-
-
-# class MambaLayer(nn.Module):
-#     def __init__(self, input_dim, hidden_dim):
-#         super(MambaLayer, self).__init__()
-#         self.hidden_dim = hidden_dim
-
-#         # State-space components
-#         self.state_transition = nn.Parameter(torch.randn(hidden_dim, hidden_dim))
-#         self.input_mapping = nn.Linear(input_dim, hidden_dim)
-#         self.output_mapping = nn.Linear(hidden_dim, input_dim)
-
-#         # Input gating for dynamic state adjustments
-#         self.input_gate = nn.Linear(input_dim, hidden_dim)
-#         self.sigmoid = nn.Sigmoid()
-
-#     def forward(self, x):
-#         # x: (batch_size, ts_dim, seq_len)
-#         batch_size, ts_dim, seq_len = x.size()
-
-#         # Initialize states: (batch_size, ts_dim, hidden_dim)
-#         states = torch.zeros(batch_size, ts_dim, self.hidden_dim).to(x.device)
-#         outputs = []
-
-#         for t in range(seq_len):
-#             input_t = x[:, :, t]  # Shape: (batch_size, ts_dim)
-#             print(f"input_t shape: {input_t.shape}")
-
-#             # Gate control for each feature
-#             gate_t = self.sigmoid(self.input_gate(input_t))  # (batch_size, hidden_dim)
-#             print(f"gate_t shape: {gate_t.shape}")
-
-#             # State transition for each feature
-#             for i in range(ts_dim):
-#                 states[:, i, :] = (
-#                     (1 - gate_t[:, i].unsqueeze(-1)) * states[:, i, :]
-#                     + gate_t[:, i].unsqueeze(-1)
-#                     * torch.matmul(states[:, i, :], self.state_transition)
-#                 )
-
-#             # Map input to state space for each feature
-#             mapped_input = self.input_mapping(input_t)  # Shape: (batch_size, ts_dim, hidden_dim)
-#             states += mapped_input.unsqueeze(1)  # Expand mapped_input to match (batch_size, ts_dim, hidden_dim)
-#             print(f"states shape: {states.shape}")
-
-#             # Map state to output
-#             output_t = self.output_mapping(states)  # Shape: (batch_size, ts_dim, input_dim)
-#             print(f"output_t shape after mapping: {output_t.shape}")
-
-#             outputs.append(output_t)
-
-#         # Final stacked output: (batch_size, input_dim, seq_len)
-#         return torch.stack(outputs, dim=-1)
-
-# class MambaEHRModel(nn.Module):
-#     def __init__(self, ts_dim, static_dim, hidden_dim, output_dim, seq_len):
-#         super(MambaEHRModel, self).__init__()
-#         self.mamba_layer = MambaLayer(ts_dim, hidden_dim)
-#         self.static_encoder = nn.Sequential(
-#             nn.Linear(static_dim, hidden_dim),
-#             nn.ReLU()
-#         )
-#         self.classifier = nn.Sequential(
-#             nn.Linear(hidden_dim * 2, hidden_dim),
-#             nn.ReLU(),
-#             nn.Linear(hidden_dim, output_dim),
-#             nn.Sigmoid()
-#         )
-
-#     def forward(self, x, static, time, sensor_mask, **kwargs) -> torch.Tensor:
-#         # Apply mask to time-series data to handle missing values
-#         print(x.shape)
-#         x = x * sensor_mask  # Mask time-series data (batch size, number of time-series features = 37, sequence length)
-#         print(x.shape)
-        
-#         # The Mamba layer processes the sequence dimension (151) for each feature dimension (37) independently.
-# 	    # The hidden_dim specifies the size of the latent representation for each feature after passing through the state-space model.
-#         ts_features = self.mamba_layer(x)
-#         print(ts_features.shape)
-        
-#         raise NotImplementedError
-#         # # Process time-series data with Mamba
-#         # ts_features = self.mamba_layer(x)  # Shape: (batch_size, ts_dim, seq_len)
-#         # ts_features = torch.mean(ts_features, dim=(1, 2))  # Collapse both ts_dim and seq_len
-#         # print(f"ts_features shape after full aggregation: {ts_features.shape}")  # Should be (batch_size, hidden_dim)
-
-#         # # Process static data
-#         # static_features = self.static_encoder(static)  # Shape: (batch_size, hidden_dim)
-#         # print(f"static_features shape: {static_features.shape}")
-
-#         # # Combine time-series and static features
-#         # combined = torch.cat([ts_features, static_features], dim=1)  # Shape: (batch_size, hidden_dim * 2)
-
-#         # Classify the combined features
-#         return self.classifier(x)
-
-

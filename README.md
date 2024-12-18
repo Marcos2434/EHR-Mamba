@@ -1,3 +1,7 @@
+# SUBMISSION DETAILS
+The submission details states to ideally include a Jupyter notebook recreates the main results of our report, however, since this project has to be run with the HPC and make use of the pre-existing architecture of the original Selective_SSM_for_EHR_Classification repository code, we have followed the same form, so please find below how to install the dependencies and run 1. the baselines and 2. the custom EHRMamba ("In-house Mamba") model.
+
+
 # deep-learning-EHR
 This is an academic project for course 02456 Deep Learning at the Technical University of Denmark. 
 
@@ -11,8 +15,6 @@ Recent advances in deep state space models (SSMs) have great potential for model
 Supervised by; Rachael Marie De Vries (rachael.devries@bio.ku.dk)
 
 Marcos Bauch Mira s215210, Jorge Grau Ramirez s243346
-
-
 
 
 
@@ -76,7 +78,7 @@ pip install torch_scatter --extra-index-url https://data.pyg.org/whl/torch-2.2.0
 `python cli.py --output_path=ouput-ipnets/ --model_type=ipnets --epochs=100 --batch_size=32 --lr=0.001 --ipnets_imputation_stepsize=1 --ipnets_reconst_fraction=0.75 --recurrent_dropout=0.3 --recurrent_n_units=32` 
 
 
-`In-house Mamba Model`
+`In-house Mamba Model` (tuned hyperparameters in the code)
 
 `python cli.py --output_path=ouput-mamba --model_type=mamba --epochs=100 --batch_size=32 --lr=0.001`
 
